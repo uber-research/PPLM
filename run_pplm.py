@@ -1,7 +1,7 @@
+#! /usr/bin/env python3
 # coding=utf-8
 # Copyright 2018 The Uber AI Team Authors.
-# 
-### Note: the following license is being requested ###
+#
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
 # You may obtain a copy of the License at
@@ -14,17 +14,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# TODO: add code for training a custom discriminator
-
 """
 Example command with bag of words:
 python examples/run_pplm.py -B space --cond_text "The president" --length 100 --gamma 1.5 --num_iterations 3 --num_samples 10 --stepsize 0.01 --window_length 5 --kl_scale 0.01 --gm_scale 0.95
 
 Example command with discriminator:
-python examples/run_pplm.py -D sentiment --label_class 3 --cond_text "The lake" --length 10 --gamma 1.0 --num_iterations 30 --num_samples 10 --stepsize 0.01 --kl_scale 0.01 --gm_scale 0.95
+python examples/run_pplm.py -D sentiment --class_label 3 --cond_text "The lake" --length 10 --gamma 1.0 --num_iterations 30 --num_samples 10 --stepsize 0.01 --kl_scale 0.01 --gm_scale 0.95
 """
 
 import argparse
+import json
 from operator import add
 from typing import List, Optional, Tuple, Union
 
@@ -34,15 +33,16 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from tqdm import trange
 
+from examples.run_pplm_discrim_train import ClassificationHead
 from transformers import GPT2Tokenizer
 from transformers.file_utils import cached_path
 from transformers.modeling_gpt2 import GPT2LMHeadModel
-from IPython import embed
 
 PPLM_BOW = 1
 PPLM_DISCRIM = 2
 PPLM_BOW_DISCRIM = 3
 SMALL_CONST = 1e-15
+BIG_CONST = 1e10
 TOKENIZER = GPT2Tokenizer.from_pretrained("gpt2-medium")
 
 BAG_OF_WORDS_ARCHIVE_MAP = {
@@ -67,7 +67,7 @@ DISCRIMINATOR_MODELS_PARAMS = {
         "default_class": 1,
     },
     "sentiment": {
-        "url": "https://s3.amazonaws.com/models.huggingface.co/bert/pplm/discriminators/sentiment_classifierhead.pt",
+        "url": "http://s.yosinski.com/SST_classifier_head.pt",
         "class_size": 5,
         "embed_size": 1024,
         "class_vocab": {"very_positive": 2, "very_negative": 3},
@@ -83,27 +83,11 @@ DISCRIMINATOR_MODELS_PARAMS = {
 }
 
 
-class ClassificationHead(torch.nn.Module):
-    """ Classification Head for the transformer """
-
-    def __init__(self, class_size=5, embed_size=2048):
-        super(ClassificationHead, self).__init__()
-        self.class_size = class_size
-        self.embed_size = embed_size
-        # self.mlp1 = torch.nn.Linear(embed_size, embed_size)
-        # self.mlp2 = (torch.nn.Linear(embed_size, class_size))
-        self.mlp = torch.nn.Linear(embed_size, class_size)
-
-    def forward(self, hidden_state):
-        # hidden_state = F.relu(self.mlp1(hidden_state))
-        # hidden_state = self.mlp2(hidden_state)
-        logits = self.mlp(hidden_state)
-        return logits
-
-
-def to_var(x, requires_grad=False, volatile=False):
-    if torch.cuda.is_available():
+def to_var(x, requires_grad=False, volatile=False, device='cuda'):
+    if torch.cuda.is_available() and device == 'cuda':
         x = x.cuda()
+    elif device != 'cuda':
+        x = x.to(device)
     return Variable(x, requires_grad=requires_grad, volatile=volatile)
 
 
@@ -113,25 +97,17 @@ def top_k_filter(logits, k, probs=False):
     Used to mask logits such that e^-infinity -> 0 won't contribute to the
     sum of the denominator.
     """
-    if k <= 0:
+    if k == 0:
         return logits
-
     else:
         values = torch.topk(logits, k)[0]
         batch_mins = values[:, -1].view(-1, 1).expand_as(logits)
-
         if probs:
-            return torch.where(
-                logits < batch_mins,
-                torch.ones_like(logits) * 0.0,
-                logits
-            )
-
-        return torch.where(
-            logits < batch_mins,
-            torch.ones_like(logits) * -1e10,
-            logits
-        )
+            return torch.where(logits < batch_mins,
+                               torch.ones_like(logits) * 0.0, logits)
+        return torch.where(logits < batch_mins,
+                           torch.ones_like(logits) * -BIG_CONST,
+                           logits)
 
 
 def perturb_past(
@@ -144,7 +120,7 @@ def perturb_past(
         grad_norms=None,
         stepsize=0.01,
         classifier=None,
-        label_class=None,
+        class_label=None,
         one_hot_bows_vectors=None,
         loss_type=0,
         num_iterations=3,
@@ -153,8 +129,9 @@ def perturb_past(
         horizon_length=1,
         decay=False,
         gamma=1.5,
+        device='cuda'
 ):
-    # initializie perturbation accumulator
+    # Generate inital perturbed past
     grad_accumulator = [
         (np.zeros(p.shape).astype("float32"))
         for p in past
@@ -165,7 +142,7 @@ def perturb_past(
 
     if decay:
         decay_mask = torch.arange(
-            0.0,
+            0.,
             1.0 + SMALL_CONST,
             1.0 / (window_length)
         )[1:]
@@ -173,8 +150,9 @@ def perturb_past(
         decay_mask = 1.0
 
     # TODO fix this comment (SUMANTH)
-    # generate a mask if perturbated gradient is based on a past window
+    # Generate a mask is gradient perturbated is based on a past window
     _, _, _, curr_length, _ = past[0].shape
+
     if curr_length > window_length and window_length > 0:
         ones_key_val_shape = (
                 tuple(past[0].shape[:-2])
@@ -195,89 +173,85 @@ def perturb_past(
         window_mask = torch.cat(
             (ones_mask, torch.zeros(zeros_key_val_shape)),
             dim=-2
-        ).cuda()
-
+        ).to(device)
     else:
-        window_mask = torch.ones_like(past[0]).cuda()
+        window_mask = torch.ones_like(past[0]).to(device)
 
     # accumulate perturbations for num_iterations
     loss_per_iter = []
+    new_accumulated_hidden = None
     for i in range(num_iterations):
         print("Iteration ", i + 1)
-
         curr_perturbation = [
-            to_var(torch.from_numpy(p_), requires_grad=True)
+            to_var(torch.from_numpy(p_), requires_grad=True, device=device)
             for p_ in grad_accumulator
         ]
 
         # Compute hidden using perturbed past
-        curr_pert_past = list(map(add, past, curr_perturbation))
-        all_logits, _, all_hidden = model(last, past=curr_pert_past)
+        perturbed_past = list(map(add, past, curr_perturbation))
+        _, _, _, curr_length, _ = curr_perturbation[0].shape
+        all_logits, _, all_hidden = model(last, past=perturbed_past)
         hidden = all_hidden[-1]
-        accumulated_hidden += torch.sum(hidden, dim=1).detach()
+        new_accumulated_hidden = accumulated_hidden + torch.sum(
+            hidden,
+            dim=1
+        ).detach()
+        # TODO: Check the layer-norm consistency of this with trained discriminator (Sumanth)
         logits = all_logits[:, -1, :]
         probs = F.softmax(logits, dim=-1)
 
-        # compute loss
-        bow_loss = 0.0
-        discrim_loss = 0.0
-        kl_loss = 0.0
-
+        loss = 0.0
+        loss_list = []
         if loss_type == PPLM_BOW or loss_type == PPLM_BOW_DISCRIM:
             for one_hot_bow in one_hot_bows_vectors:
                 bow_logits = torch.mm(probs, torch.t(one_hot_bow))
-                bow_loss += -torch.log(torch.sum(bow_logits))
-            print(" pplm_bow_loss:", bow_loss.data.cpu().numpy())
+                bow_loss = -torch.log(torch.sum(bow_logits))
+                loss += bow_loss
+                loss_list.append(bow_loss)
+            print(" pplm_bow_loss:", loss.data.cpu().numpy())
 
-        if loss_type == PPLM_DISCRIM or loss_type == PPLM_BOW_DISCRIM:
+        if loss_type == 2 or loss_type == 3:
             ce_loss = torch.nn.CrossEntropyLoss()
-            # TODO all there are for (SUMANTH)
-            # TODO why we need to do this assignment and not just using unpert_past?
+            # TODO why we need to do this assignment and not just using unpert_past? (Sumanth)
             curr_unpert_past = unpert_past
-            # Get the model's token embeddings in order to compute our own embeds from curr_probs:
+            curr_probs = torch.unsqueeze(probs, dim=1)
             wte = model.resize_token_embeddings()
-            # TODO i is never used, why do we need to do this i times instead multiplying
-            #   torch.sum(unpert_hidden, dim=1) * horizon_length?
-            for i in range(horizon_length):
-                # TODO the next two lines can be done only one time, and why not using probs instead as they do not change at each iteration?
-                curr_probs = F.softmax(logits, dim=-1)  # get softmax
-                curr_probs = torch.unsqueeze(curr_probs, dim=1)
+            for _ in range(horizon_length):
                 inputs_embeds = torch.matmul(curr_probs, wte.weight.data)
                 _, curr_unpert_past, curr_all_hidden = model(
                     past=curr_unpert_past,
                     inputs_embeds=inputs_embeds
                 )
-                # get expected hidden states
-                unpert_hidden = curr_all_hidden[-1]
-                accumulated_hidden += torch.sum(unpert_hidden, dim=1).detach()
+                curr_hidden = curr_all_hidden[-1]
+                new_accumulated_hidden = new_accumulated_hidden + torch.sum(
+                    curr_hidden, dim=1)
 
-            prediction = classifier(
-                accumulated_hidden / (curr_length + 1 + horizon_length)
-            )
+            prediction = classifier(new_accumulated_hidden /
+                                    (curr_length + 1 + horizon_length))
 
-            label = torch.tensor([label_class], device="cuda", dtype=torch.long)
-            discrim_loss += ce_loss(prediction, label)
+            label = torch.tensor([class_label], device=device,
+                                 dtype=torch.long)
+            discrim_loss = ce_loss(prediction, label)
             print(" pplm_discrim_loss:", discrim_loss.data.cpu().numpy())
+            loss += discrim_loss
+            loss_list.append(discrim_loss)
 
+        kl_loss = 0.0
         if kl_scale > 0.0:
             unpert_probs = F.softmax(unpert_logits[:, -1, :], dim=-1)
             unpert_probs = (
                     unpert_probs + SMALL_CONST *
-                    (unpert_probs <= SMALL_CONST).type(
-                        torch.FloatTensor
-                    ).cuda().detach()
+                    (unpert_probs <= SMALL_CONST).float().to(device).detach()
             )
-
-            correction = SMALL_CONST * (probs <= SMALL_CONST).type(
-                torch.FloatTensor
-            ).cuda().detach()
+            correction = SMALL_CONST * (probs <= SMALL_CONST).float().to(
+                device).detach()
             corrected_probs = probs + correction.detach()
             kl_loss = kl_scale * (
                 (corrected_probs * (corrected_probs / unpert_probs).log()).sum()
             )
-            print(' kl_loss', (kl_loss).data.cpu().numpy())
+            print(' kl_loss', kl_loss.data.cpu().numpy())
+            loss += kl_loss
 
-        loss = bow_loss + discrim_loss + kl_loss
         loss_per_iter.append(loss.data.cpu().numpy())
         print(' pplm_loss', (loss - kl_loss).data.cpu().numpy())
 
@@ -298,13 +272,13 @@ def perturb_past(
 
         # normalize gradients
         grad = [
-            -stepsize
-            * (p_.grad * window_mask / grad_norms[
+            -stepsize *
+            (p_.grad * window_mask / grad_norms[
                 index] ** gamma).data.cpu().numpy()
             for index, p_ in enumerate(curr_perturbation)
         ]
 
-        # accumulate gradients
+        # accumulate gradient
         grad_accumulator = list(map(add, grad, grad_accumulator))
 
         # reset gradients, just to make sure
@@ -319,16 +293,17 @@ def perturb_past(
 
     # apply the accumulated perturbations to the past
     grad_accumulator = [
-        to_var(torch.from_numpy(p_), requires_grad=True)
+        to_var(torch.from_numpy(p_), requires_grad=True, device=device)
         for p_ in grad_accumulator
     ]
     pert_past = list(map(add, past, grad_accumulator))
 
-    return pert_past, accumulated_hidden, grad_norms, loss_per_iter
+    return pert_past, new_accumulated_hidden, grad_norms, loss_per_iter
 
 
 def get_classifier(
-        name: Optional[str], label_class: Union[str, int], device: Union[str, torch.device]
+        name: Optional[str], class_label: Union[str, int],
+        device: str
 ) -> Tuple[Optional[ClassificationHead], Optional[int]]:
     if name is None:
         return None, None
@@ -338,25 +313,29 @@ def get_classifier(
         class_size=params['class_size'],
         embed_size=params['embed_size']
     ).to(device)
-    resolved_archive_file = cached_path(params["url"])
-    classifier.load_state_dict(torch.load(resolved_archive_file, map_location=device))
+    if "url" in params:
+        resolved_archive_file = cached_path(params["url"])
+    else:
+        resolved_archive_file = params["path"]
+    classifier.load_state_dict(
+        torch.load(resolved_archive_file, map_location=device))
     classifier.eval()
 
-    if isinstance(label_class, str):
-        if label_class in params["class_vocab"]:
-            label_id = params["class_vocab"][label_class]
+    if isinstance(class_label, str):
+        if class_label in params["class_vocab"]:
+            label_id = params["class_vocab"][class_label]
         else:
             label_id = params["default_class"]
-            print("label_class {} not in class_vocab".format(label_class))
+            print("class_label {} not in class_vocab".format(class_label))
             print("available values are: {}".format(params["class_vocab"]))
             print("using default class {}".format(label_id))
 
-    elif isinstance(label_class, int):
-        if label_class in set(params["class_vocab"].values()):
-            label_id = label_class
+    elif isinstance(class_label, int):
+        if class_label in set(params["class_vocab"].values()):
+            label_id = class_label
         else:
             label_id = params["default_class"]
-            print("label_class {} not in class_vocab".format(label_class))
+            print("class_label {} not in class_vocab".format(class_label))
             print("available values are: {}".format(params["class_vocab"]))
             print("using default class {}".format(label_id))
 
@@ -366,7 +345,8 @@ def get_classifier(
     return classifier, label_id
 
 
-def get_bag_of_words_indices(bag_of_words_ids_or_paths: List[str]) -> List[List[List[int]]]:
+def get_bag_of_words_indices(bag_of_words_ids_or_paths: List[str]) -> List[
+    List[List[int]]]:
     bow_indices = []
     for id_or_path in bag_of_words_ids_or_paths:
         if id_or_path in BAG_OF_WORDS_ARCHIVE_MAP:
@@ -374,21 +354,23 @@ def get_bag_of_words_indices(bag_of_words_ids_or_paths: List[str]) -> List[List[
         else:
             filepath = id_or_path
         with open(filepath, "r") as f:
-            words = f.read().split("\n")
-        bow_indices.append([TOKENIZER.encode(word, add_prefix_space=True) for word in words])
+            words = f.read().strip().split("\n")
+        bow_indices.append(
+            [TOKENIZER.encode(word.strip(), add_prefix_space=True) for word in
+             words])
     return bow_indices
 
 
-def build_bows_one_hot_vectors(bow_indices):
+def build_bows_one_hot_vectors(bow_indices, device='cuda'):
     if bow_indices is None:
         return None
 
     one_hot_bows_vectors = []
     for single_bow in bow_indices:
         single_bow = list(filter(lambda x: len(x) <= 1, single_bow))
-        single_bow = torch.tensor(single_bow).cuda()
+        single_bow = torch.tensor(single_bow).to(device)
         num_words = single_bow.shape[0]
-        one_hot_bow = torch.zeros(num_words, TOKENIZER.vocab_size).cuda()
+        one_hot_bow = torch.zeros(num_words, TOKENIZER.vocab_size).to(device)
         one_hot_bow.scatter_(1, single_bow, 1)
         one_hot_bows_vectors.append(one_hot_bow)
     return one_hot_bows_vectors
@@ -401,7 +383,7 @@ def full_text_generation(
         device="cuda",
         sample=True,
         discrim=None,
-        label_class=None,
+        class_label=None,
         bag_of_words=None,
         length=100,
         grad_length=10000,
@@ -419,7 +401,7 @@ def full_text_generation(
 ):
     classifier, class_id = get_classifier(
         discrim,
-        label_class,
+        class_label,
         device
     )
 
@@ -440,7 +422,7 @@ def full_text_generation(
         print("Using PPLM-Discrim")
 
     else:
-        raise Exception("Specify either --bag_of_words (-B) or --discrim (-D)")
+        raise Exception("Specify either a bag of words or a discriminator")
 
     unpert_gen_tok_text, _, _ = generate_text_pplm(
         model=model,
@@ -449,7 +431,8 @@ def full_text_generation(
         length=length,
         perturb=False
     )
-    torch.cuda.empty_cache()
+    if device == 'cuda':
+        torch.cuda.empty_cache()
 
     pert_gen_tok_texts = []
     discrim_losses = []
@@ -464,7 +447,7 @@ def full_text_generation(
             perturb=True,
             bow_indices=bow_indices,
             classifier=classifier,
-            label_class=class_id,
+            class_label=class_id,
             loss_type=loss_type,
             length=length,
             grad_length=grad_length,
@@ -484,7 +467,8 @@ def full_text_generation(
             discrim_losses.append(discrim_loss.data.cpu().numpy())
         losses_in_time.append(loss_in_time)
 
-    torch.cuda.empty_cache()
+    if device == 'cuda':
+        torch.cuda.empty_cache()
 
     return unpert_gen_tok_text, pert_gen_tok_texts, discrim_losses, losses_in_time
 
@@ -497,7 +481,7 @@ def generate_text_pplm(
         sample=True,
         perturb=True,
         classifier=None,
-        label_class=None,
+        class_label=None,
         bow_indices=None,
         loss_type=0,
         length=100,
@@ -520,7 +504,7 @@ def generate_text_pplm(
     )
 
     # collect one hot vectors for bags of words
-    one_hot_bows_vectors = build_bows_one_hot_vectors(bow_indices)
+    one_hot_bows_vectors = build_bows_one_hot_vectors(bow_indices, device)
 
     grad_norms = None
     last = None
@@ -537,12 +521,8 @@ def generate_text_pplm(
             if output_so_far.shape[1] > 1:
                 _, past, _ = model(output_so_far[:, :-1])
 
-            unpert_logits, unpert_past, unpert_all_hidden = model(output_so_far)
-            unpert_last_hidden = unpert_all_hidden[-1]
-
-        else:
-            unpert_logits, unpert_past, unpert_all_hidden = model(output_so_far)
-            unpert_last_hidden = unpert_all_hidden[-1]
+        unpert_logits, unpert_past, unpert_all_hidden = model(output_so_far)
+        unpert_last_hidden = unpert_all_hidden[-1]
 
         # check if we are abowe grad max length
         if i >= grad_length:
@@ -569,7 +549,7 @@ def generate_text_pplm(
                     grad_norms=grad_norms,
                     stepsize=current_stepsize,
                     classifier=classifier,
-                    label_class=label_class,
+                    class_label=class_label,
                     one_hot_bows_vectors=one_hot_bows_vectors,
                     loss_type=loss_type,
                     num_iterations=num_iterations,
@@ -578,20 +558,22 @@ def generate_text_pplm(
                     horizon_length=horizon_length,
                     decay=decay,
                     gamma=gamma,
+                    device=device
                 )
                 loss_in_time.append(loss_this_iter)
             else:
                 pert_past = past
 
         pert_logits, past, pert_all_hidden = model(last, past=pert_past)
-        pert_logits = pert_logits[:, -1, :] / temperature
+        pert_logits = pert_logits[:, -1, :] / temperature  # + SMALL_CONST
         pert_probs = F.softmax(pert_logits, dim=-1)
 
-        # compute the discriminator loss using unperturbed hidden
         if classifier is not None:
+            ce_loss = torch.nn.CrossEntropyLoss()
             prediction = classifier(torch.mean(unpert_last_hidden, dim=1))
-            label = torch.tensor([label_class], device="cuda", dtype=torch.long)
-            unpert_discrim_loss = torch.nn.CrossEntropyLoss()(prediction, label)
+            label = torch.tensor([class_label], device=device,
+                                 dtype=torch.long)
+            unpert_discrim_loss = ce_loss(prediction, label)
             print(
                 "unperturbed discrim loss",
                 unpert_discrim_loss.data.cpu().numpy()
@@ -599,22 +581,22 @@ def generate_text_pplm(
         else:
             unpert_discrim_loss = 0
 
-        # Fuse the modified model and original model probabilities
+        # Fuse the modified model and original model
         if perturb:
+
             unpert_probs = F.softmax(unpert_logits[:, -1, :], dim=-1)
 
-            pert_probs = (pert_probs ** gm_scale) * (
-                    unpert_probs ** (1 - gm_scale)
-            )
-
-            pert_probs = top_k_filter(pert_probs, k=top_k, probs=True)
+            pert_probs = ((pert_probs ** gm_scale) * (
+                    unpert_probs ** (1 - gm_scale)))  # + SMALL_CONST
+            pert_probs = top_k_filter(pert_probs, k=top_k,
+                                      probs=True)  # + SMALL_CONST
 
             # rescale
             if torch.sum(pert_probs) <= 1:
                 pert_probs = pert_probs / torch.sum(pert_probs)
 
         else:
-            pert_logits = top_k_filter(pert_logits, k=top_k)
+            pert_logits = top_k_filter(pert_logits, k=top_k)  # + SMALL_CONST
             pert_probs = F.softmax(pert_logits, dim=-1)
 
         # sample or greedy
@@ -629,9 +611,24 @@ def generate_text_pplm(
             last if output_so_far is None
             else torch.cat((output_so_far, last), dim=1)
         )
+
         print(TOKENIZER.decode(output_so_far.tolist()[0]))
 
     return output_so_far, unpert_discrim_loss, loss_in_time
+
+
+def set_generic_model_params(discrim_weights, discrim_meta):
+    if discrim_weights is None:
+        raise ValueError('When using a generic discriminator, '
+                         'discrim_weights need to be specified')
+    if discrim_meta is None:
+        raise ValueError('When using a generic discriminator, '
+                         'discrim_meta need to be specified')
+
+    with open(discrim_meta, 'r') as discrim_meta_file:
+        meta = json.load(discrim_meta_file)
+    meta['path'] = discrim_weights
+    DISCRIMINATOR_MODELS_PARAMS['generic'] = meta
 
 
 def run_model():
@@ -648,18 +645,24 @@ def run_model():
         "-B",
         type=str,
         default=None,
-        help="Bags of words used for PPLM-BoW. Either a BOW id (see list in code) or a filepath. Multiple BoWs separated by ;",
+        help="Bags of words used for PPLM-BoW. "
+             "Either a BOW id (see list in code) or a filepath. "
+             "Multiple BoWs separated by ;",
     )
     parser.add_argument(
         "--discrim",
         "-D",
         type=str,
         default=None,
-        choices=("clickbait", "sentiment", "toxicity"),
-        help="Discriminator to use for loss-type 2",
+        choices=("clickbait", "sentiment", "toxicity", "generic"),
+        help="Discriminator to use",
     )
+    parser.add_argument('--discrim_weights', type=str, default=None,
+                        help='Weights for the generic discriminator')
+    parser.add_argument('--discrim_meta', type=str, default=None,
+                        help='Meta information for the generic discriminator')
     parser.add_argument(
-        "--label_class",
+        "--class_label",
         type=int,
         default=-1,
         help="Class label used for the discriminator",
@@ -704,6 +707,8 @@ def run_model():
     parser.add_argument("--decay", action="store_true",
                         help="whether to decay or not")
     parser.add_argument("--gamma", type=float, default=1.5)
+    parser.add_argument("--colorama", action="store_true",
+                        help="colors keywords")
 
     args = parser.parse_args()
 
@@ -712,7 +717,10 @@ def run_model():
     np.random.seed(args.seed)
 
     # set the device
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
+    device = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
+
+    if args.discrim == 'generic':
+        set_generic_model_params(args.discrim_weights, args.discrim_meta)
 
     # load pretrained model
     model = GPT2LMHeadModel.from_pretrained(
@@ -722,7 +730,7 @@ def run_model():
     model.to(device)
     model.eval()
 
-    # freeze GPT-2 weights
+    # Freeze GPT-2 weights
     for param in model.parameters():
         param.requires_grad = False
 
@@ -760,14 +768,37 @@ def run_model():
 
     generated_texts = []
 
+    bow_word_ids = set()
+    if args.bag_of_words and args.colorama:
+        bow_indices = get_bag_of_words_indices(args.bag_of_words.split(";"))
+        for single_bow_list in bow_indices:
+            # filtering all words in the list composed of more than 1 token
+            filtered = list(filter(lambda x: len(x) <= 1, single_bow_list))
+            # w[0] because we are sure w has only 1 item because previous fitler
+            bow_word_ids.update(w[0] for w in filtered)
+
     # iterate through the perturbed texts
     for i, pert_gen_tok_text in enumerate(pert_gen_tok_texts):
         try:
             # untokenize unperturbed text
-            unpert_gen_text = TOKENIZER.decode(pert_gen_tok_text.tolist()[0])
+            if args.colorama:
+                import colorama
+
+                pert_gen_text = ''
+                for word_id in pert_gen_tok_text.tolist()[0]:
+                    if word_id in bow_word_ids:
+                        pert_gen_text += '{}{}{}'.format(
+                            colorama.Fore.RED,
+                            TOKENIZER.decode([word_id]),
+                            colorama.Style.RESET_ALL
+                        )
+                    else:
+                        pert_gen_text += TOKENIZER.decode([word_id])
+            else:
+                pert_gen_text = TOKENIZER.decode(pert_gen_tok_text.tolist()[0])
 
             print("= Perturbed generated text {} =".format(i + 1))
-            print(unpert_gen_text)
+            print(pert_gen_text)
             print()
         except:
             pass
@@ -777,8 +808,8 @@ def run_model():
             (tokenized_cond_text, pert_gen_tok_text, unpert_gen_tok_text)
         )
 
-    return generated_texts
+    return
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     run_model()
