@@ -1,22 +1,7 @@
 #! /usr/bin/env python3
 # coding=utf-8
 
-#! /usr/bin/env python3
-# coding=utf-8
-# Copyright 2019 The Uber AI Team Authors.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
+# This code is licensed under a non-commercial license.
 
 import argparse
 import csv
@@ -36,6 +21,7 @@ from torchtext import datasets
 from tqdm import tqdm, trange
 
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from pplm_classification_head import ClassificationHead
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -44,22 +30,6 @@ example_sentence = "This is incredible! I love it, this is the best chicken I ha
 max_length_seq = 100
 
 
-class ClassificationHead(torch.nn.Module):
-    """Classification Head for  transformer encoders"""
-
-    def __init__(self, class_size, embed_size):
-        super(ClassificationHead, self).__init__()
-        self.class_size = class_size
-        self.embed_size = embed_size
-        # self.mlp1 = torch.nn.Linear(embed_size, embed_size)
-        # self.mlp2 = (torch.nn.Linear(embed_size, class_size))
-        self.mlp = torch.nn.Linear(embed_size, class_size)
-
-    def forward(self, hidden_state):
-        # hidden_state = F.relu(self.mlp1(hidden_state))
-        # hidden_state = self.mlp2(hidden_state)
-        logits = self.mlp(hidden_state)
-        return logits
 
 
 class Discriminator(torch.nn.Module):
