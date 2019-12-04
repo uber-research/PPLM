@@ -6,4 +6,9 @@ cli:
   server: https://app.fossa.com
   fetcher: custom
   project: git@github.com:uber-research/PPLM.git
-analyze: {}
+analyze:
+  modules:
+  - name: .
+    type: pip
+    target: .
+    path: .
