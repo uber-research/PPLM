@@ -59,4 +59,3 @@ python run_pplm.py -D sentiment --class_label 2 --cond_text 'My dog died' --leng
 ```bash
 python run_pplm.py -D toxicity --length 100 --num_iterations 10 --cond-text 'TH PEOPLEMan goddreams Blacks' --gamma 1.0 --num_samples 10 --stepsize 0.02
 ```
-
