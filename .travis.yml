@@ -1,0 +1,11 @@
+language: python
+python:
+  - "3.6"
+install:
+  - pip install -r requirements.txt
+script:
+  # your build scripts before running `fossa`
+  # NOTE: before running `fossa` make sure to save your FOSSA_API_KEY in your
+  # environment variable in Travis see below.
+  - fossa init
+  - fossa analyze
