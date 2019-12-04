@@ -1,0 +1,5 @@
+torch==1.2
+nltk
+colorama
+transformers
+torchtext
