@@ -1,6 +1,9 @@
 # PPLM
 
 This repository contains the original code used to run the Plug and Play Language Model (PPLM).
+
+It has also been integrated into the **[🤗/Transformers](https://github.com/huggingface/transformers/tree/master/examples/pplm)** repository.
+
 ![header image](./imgs/headfigure.png)
 
 ## Plug and Play Language Models: a Simple Approach to Controlled Text Generation
