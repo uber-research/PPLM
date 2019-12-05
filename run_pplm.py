@@ -203,7 +203,7 @@ def perturb_past(
                 loss_list.append(bow_loss)
             print(" pplm_bow_loss:", loss.data.cpu().numpy())
 
-        if loss_type == 2 or loss_type == 3:
+        if loss_type == PPLM_DISCRIM or loss_type == PPLM_BOW_DISCRIM:
             ce_loss = torch.nn.CrossEntropyLoss()
             # TODO why we need to do this assignment and not just using unpert_past? (Sumanth)
             curr_unpert_past = unpert_past
