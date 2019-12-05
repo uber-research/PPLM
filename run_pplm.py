@@ -32,10 +32,10 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from tqdm import trange
-
 from transformers import GPT2Tokenizer
 from transformers.file_utils import cached_path
 from transformers.modeling_gpt2 import GPT2LMHeadModel
+
 from pplm_classification_head import ClassificationHead
 
 PPLM_BOW = 1
@@ -43,6 +43,17 @@ PPLM_DISCRIM = 2
 PPLM_BOW_DISCRIM = 3
 SMALL_CONST = 1e-15
 BIG_CONST = 1e10
+
+QUIET = 0
+REGULAR = 1
+VERBOSE = 2
+VERY_VERBOSE = 3
+VERBOSITY_LEVELS = {
+    'quiet': QUIET,
+    'regular': REGULAR,
+    'verbose': VERBOSE,
+    'very_verbose': VERY_VERBOSE,
+}
 
 BAG_OF_WORDS_ARCHIVE_MAP = {
     'legal': "https://s3.amazonaws.com/models.huggingface.co/bert/pplm/bow/legal.txt",
@@ -123,6 +134,7 @@ def perturb_past(
         gamma=1.5,
         kl_scale=0.01,
         device='cuda',
+        verbosity_level=REGULAR
 ):
     # Generate inital perturbed past
     grad_accumulator = [
@@ -174,7 +186,8 @@ def perturb_past(
     loss_per_iter = []
     new_accumulated_hidden = None
     for i in range(num_iterations):
-        print("Iteration ", i + 1)
+        if verbosity_level >= VERBOSE:
+            print("Iteration ", i + 1)
         curr_perturbation = [
             to_var(torch.from_numpy(p_), requires_grad=True, device=device)
             for p_ in grad_accumulator
@@ -201,9 +214,10 @@ def perturb_past(
                 bow_loss = -torch.log(torch.sum(bow_logits))
                 loss += bow_loss
                 loss_list.append(bow_loss)
-            print(" pplm_bow_loss:", loss.data.cpu().numpy())
+            if verbosity_level >= VERY_VERBOSE:
+                print(" pplm_bow_loss:", loss.data.cpu().numpy())
 
-        if loss_type == 2 or loss_type == 3:
+        if loss_type == PPLM_DISCRIM or loss_type == PPLM_BOW_DISCRIM:
             ce_loss = torch.nn.CrossEntropyLoss()
             # TODO why we need to do this assignment and not just using unpert_past? (Sumanth)
             curr_unpert_past = unpert_past
@@ -226,7 +240,8 @@ def perturb_past(
                                  device=device,
                                  dtype=torch.long)
             discrim_loss = ce_loss(prediction, label)
-            print(" pplm_discrim_loss:", discrim_loss.data.cpu().numpy())
+            if verbosity_level >= VERY_VERBOSE:
+                print(" pplm_discrim_loss:", discrim_loss.data.cpu().numpy())
             loss += discrim_loss
             loss_list.append(discrim_loss)
 
@@ -243,11 +258,13 @@ def perturb_past(
             kl_loss = kl_scale * (
                 (corrected_probs * (corrected_probs / unpert_probs).log()).sum()
             )
-            print(' kl_loss', kl_loss.data.cpu().numpy())
+            if verbosity_level >= VERY_VERBOSE:
+                print(' kl_loss', kl_loss.data.cpu().numpy())
             loss += kl_loss
 
         loss_per_iter.append(loss.data.cpu().numpy())
-        print(' pplm_loss', (loss - kl_loss).data.cpu().numpy())
+        if verbosity_level >= VERBOSE:
+            print(' pplm_loss', (loss - kl_loss).data.cpu().numpy())
 
         # compute gradients
         loss.backward()
@@ -296,8 +313,10 @@ def perturb_past(
 
 
 def get_classifier(
-        name: Optional[str], class_label: Union[str, int],
-        device: str
+        name: Optional[str],
+        class_label: Union[str, int],
+        device: str,
+        verbosity_level: int = REGULAR
 ) -> Tuple[Optional[ClassificationHead], Optional[int]]:
     if name is None:
         return None, None
@@ -323,18 +342,20 @@ def get_classifier(
             label_id = params["class_vocab"][class_label]
         else:
             label_id = params["default_class"]
-            print("class_label {} not in class_vocab".format(class_label))
-            print("available values are: {}".format(params["class_vocab"]))
-            print("using default class {}".format(label_id))
+            if verbosity_level >= REGULAR:
+                print("class_label {} not in class_vocab".format(class_label))
+                print("available values are: {}".format(params["class_vocab"]))
+                print("using default class {}".format(label_id))
 
     elif isinstance(class_label, int):
         if class_label in set(params["class_vocab"].values()):
             label_id = class_label
         else:
             label_id = params["default_class"]
-            print("class_label {} not in class_vocab".format(class_label))
-            print("available values are: {}".format(params["class_vocab"]))
-            print("using default class {}".format(label_id))
+            if verbosity_level >= REGULAR:
+                print("class_label {} not in class_vocab".format(class_label))
+                print("available values are: {}".format(params["class_vocab"]))
+                print("using default class {}".format(label_id))
 
     else:
         label_id = params["default_class"]
@@ -353,8 +374,10 @@ def get_bag_of_words_indices(bag_of_words_ids_or_paths: List[str], tokenizer) ->
         with open(filepath, "r") as f:
             words = f.read().strip().split("\n")
         bow_indices.append(
-            [tokenizer.encode(word.strip(), add_prefix_space=True) for word in
-             words])
+            [tokenizer.encode(word.strip(),
+                              add_prefix_space=True,
+                              add_special_tokens=False)
+             for word in words])
     return bow_indices
 
 
@@ -395,6 +418,7 @@ def full_text_generation(
         gamma=1.5,
         gm_scale=0.9,
         kl_scale=0.01,
+        verbosity_level=REGULAR,
         **kwargs
 ):
     classifier, class_id = get_classifier(
@@ -409,16 +433,20 @@ def full_text_generation(
                                                tokenizer)
 
     if bag_of_words and classifier:
-        print("Both PPLM-BoW and PPLM-Discrim are on. This is not optimized.")
         loss_type = PPLM_BOW_DISCRIM
+        if verbosity_level >= REGULAR:
+            print("Both PPLM-BoW and PPLM-Discrim are on. "
+                  "This is not optimized.")
 
     elif bag_of_words:
         loss_type = PPLM_BOW
-        print("Using PPLM-BoW")
+        if verbosity_level >= REGULAR:
+            print("Using PPLM-BoW")
 
     elif classifier is not None:
         loss_type = PPLM_DISCRIM
-        print("Using PPLM-Discrim")
+        if verbosity_level >= REGULAR:
+            print("Using PPLM-Discrim")
 
     else:
         raise Exception("Specify either a bag of words or a discriminator")
@@ -430,7 +458,8 @@ def full_text_generation(
         device=device,
         length=length,
         sample=sample,
-        perturb=False
+        perturb=False,
+        verbosity_level=verbosity_level
     )
     if device == 'cuda':
         torch.cuda.empty_cache()
@@ -463,6 +492,7 @@ def full_text_generation(
             gamma=gamma,
             gm_scale=gm_scale,
             kl_scale=kl_scale,
+            verbosity_level=verbosity_level
         )
         pert_gen_tok_texts.append(pert_gen_tok_text)
         if classifier is not None:
@@ -499,6 +529,7 @@ def generate_text_pplm(
         gamma=1.5,
         gm_scale=0.9,
         kl_scale=0.01,
+        verbosity_level=REGULAR
 ):
     output_so_far = None
     if context:
@@ -515,7 +546,13 @@ def generate_text_pplm(
     last = None
     unpert_discrim_loss = 0
     loss_in_time = []
-    for i in trange(length, ascii=True):
+
+    if verbosity_level >= VERBOSE:
+        range_func = trange(length, ascii=True)
+    else:
+        range_func = range(length)
+
+    for i in range_func:
 
         # Get past/probs for current output, except for last word
         # Note that GPT takes 2 inputs: past + current_token
@@ -564,6 +601,7 @@ def generate_text_pplm(
                     gamma=gamma,
                     kl_scale=kl_scale,
                     device=device,
+                    verbosity_level=verbosity_level
                 )
                 loss_in_time.append(loss_this_iter)
             else:
@@ -616,8 +654,8 @@ def generate_text_pplm(
             last if output_so_far is None
             else torch.cat((output_so_far, last), dim=1)
         )
-
-        print(tokenizer.decode(output_so_far.tolist()[0]))
+        if verbosity_level >= REGULAR:
+            print(tokenizer.decode(output_so_far.tolist()[0]))
 
     return output_so_far, unpert_discrim_loss, loss_in_time
 
@@ -661,11 +699,15 @@ def run_pplm_example(
         kl_scale=0.01,
         seed=0,
         no_cuda=False,
-        colorama=False
+        colorama=False,
+        verbosity='regular'
 ):
     # set Random seed
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+    # set verbosiry
+    verbosity_level = VERBOSITY_LEVELS.get(verbosity.lower(), REGULAR)
 
     # set the device
     device = "cuda" if torch.cuda.is_available() and not no_cuda else "cpu"
@@ -674,11 +716,14 @@ def run_pplm_example(
         set_generic_model_params(discrim_weights, discrim_meta)
 
     if discrim is not None:
-        pretrained_model = DISCRIMINATOR_MODELS_PARAMS[discrim][
+        discriminator_pretrained_model = DISCRIMINATOR_MODELS_PARAMS[discrim][
             "pretrained_model"
         ]
-        print("discrim = {}, pretrained_model set "
-              "to discriminator's = {}".format(discrim, pretrained_model))
+        if pretrained_model != discriminator_pretrained_model:
+            pretrained_model = discriminator_pretrained_model
+            if verbosity_level >= REGULAR:
+                print("discrim = {}, pretrained_model set "
+                "to discriminator's = {}".format(discrim, pretrained_model))
 
     # load pretrained model
     model = GPT2LMHeadModel.from_pretrained(
@@ -698,14 +743,18 @@ def run_pplm_example(
     # figure out conditioning text
     if uncond:
         tokenized_cond_text = tokenizer.encode(
-            [tokenizer.bos_token]
+            [tokenizer.bos_token],
+            add_special_tokens=False
         )
     else:
         raw_text = cond_text
         while not raw_text:
             print("Did you forget to add `--cond_text`? ")
             raw_text = input("Model prompt >>> ")
-        tokenized_cond_text = tokenizer.encode(tokenizer.bos_token + raw_text)
+        tokenized_cond_text = tokenizer.encode(
+            tokenizer.bos_token + raw_text,
+            add_special_tokens=False
+        )
 
     print("= Prefix of sentence =")
     print(tokenizer.decode(tokenized_cond_text))
@@ -737,12 +786,14 @@ def run_pplm_example(
         gamma=gamma,
         gm_scale=gm_scale,
         kl_scale=kl_scale,
+        verbosity_level=verbosity_level
     )
 
     # untokenize unperturbed text
     unpert_gen_text = tokenizer.decode(unpert_gen_tok_text.tolist()[0])
 
-    print("=" * 80)
+    if verbosity_level >= REGULAR:
+        print("=" * 80)
     print("= Unperturbed generated text =")
     print(unpert_gen_text)
     print()
@@ -875,6 +926,10 @@ if __name__ == '__main__':
     parser.add_argument("--no_cuda", action="store_true", help="no cuda")
     parser.add_argument("--colorama", action="store_true",
                         help="colors keywords")
+    parser.add_argument("--verbosity", type=str, default="very_verbose",
+                        choices=(
+                            "quiet", "regular", "verbose", "very_verbose"),
+                        help="verbosiry level")
 
     args = parser.parse_args()
     run_pplm_example(**vars(args))
