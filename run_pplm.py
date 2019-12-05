@@ -716,12 +716,14 @@ def run_pplm_example(
         set_generic_model_params(discrim_weights, discrim_meta)
 
     if discrim is not None:
-        pretrained_model = DISCRIMINATOR_MODELS_PARAMS[discrim][
+        discriminator_pretrained_model = DISCRIMINATOR_MODELS_PARAMS[discrim][
             "pretrained_model"
         ]
-        if verbosity_level >= REGULAR:
-            print("discrim = {}, pretrained_model set "
-              "to discriminator's = {}".format(discrim, pretrained_model))
+        if pretrained_model != discriminator_pretrained_model:
+            pretrained_model = discriminator_pretrained_model
+            if verbosity_level >= REGULAR:
+                print("discrim = {}, pretrained_model set "
+                "to discriminator's = {}".format(discrim, pretrained_model))
 
     # load pretrained model
     model = GPT2LMHeadModel.from_pretrained(
