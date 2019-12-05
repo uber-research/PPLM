@@ -1,6 +1,6 @@
 # PPLM
 
-This folder contains the original code used to run the Plug and Play Language Model (PPLM).
+This repository contains the original code used to run the Plug and Play Language Model (PPLM).
 ![header image](./imgs/headfigure.png)
 
 ## Plug and Play Language Models: a Simple Approach to Controlled Text Generation
