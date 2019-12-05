@@ -12,6 +12,7 @@ Paper link: https://arxiv.org/abs/1912.02164
 
 Blog link: https://eng.uber.com/pplm
 
+Colab link to test it out without any setup: https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3
 
 ## Setup
 
