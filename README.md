@@ -1,6 +1,6 @@
 # PPLM
 
-This repository contains code to run the Plug and Play Language Model (PPLM), as described in this **[blog post](https://eng.uber.com/pplm)** and **[arXiv paper](https://arxiv.org/abs/1912.02164)**. See also the [demo](https://transformer.huggingface.co/model/pplm) and [Colab notebook](https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3).
+This repository contains code to run the Plug and Play Language Model (PPLM), as described in this **[blog post](https://eng.uber.com/pplm)** and **[arXiv paper](https://arxiv.org/abs/1912.02164)**. A **[demo](https://transformer.huggingface.co/model/pplm)** and **[Colab notebook](https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3)** are also available.
 
 PPLM is also integrated into the **[🤗/Transformers](https://github.com/huggingface/transformers/tree/master/examples/pplm)** repository.
 
