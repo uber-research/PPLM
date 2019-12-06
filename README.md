@@ -1,8 +1,8 @@
 # PPLM
 
-This repository contains the original code used to run the Plug and Play Language Model (PPLM).
+This repository contains the original code used to run the Plug and Play Language Model (PPLM), as described in this **[blog post](https://eng.uber.com/pplm)** and **[arXiv paper](https://arxiv.org/abs/1912.02164)**.
 
-It has also been integrated into the **[🤗/Transformers](https://github.com/huggingface/transformers/tree/master/examples/pplm)** repository.
+PPLM is also integrated into the **[🤗/Transformers](https://github.com/huggingface/transformers/tree/master/examples/pplm)** repository.
 
 ![header image](./imgs/headfigure.png)
 
@@ -11,11 +11,7 @@ Authors: [Sumanth Dathathri](https://dathath.github.io/), [Andrea Madotto](https
 
 PPLM allows a user to flexibly plug in one or more tiny attribute models representing the desired steering objective into a large, unconditional language model (LM). The method has the key property that it uses the LM _as is_—no training or fine-tuning is required—which enables researchers to leverage best-in-class LMs even if they do not have the extensive hardware required to train them.
 
-Paper link: https://arxiv.org/abs/1912.02164
-
-Blog link: https://eng.uber.com/pplm
-
-Colab link to test it out without any setup: https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3
+See also our [arXiv paper](https://arxiv.org/abs/1912.02164), [blog post](https://eng.uber.com/pplm), and try it out for yourself with no setup using the [Colab notebook](https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3).
 
 ## Setup
 
