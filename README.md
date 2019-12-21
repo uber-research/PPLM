@@ -62,3 +62,5 @@ python run_pplm.py -D sentiment --class_label 2 --cond_text "My dog died" --leng
 
 2. Use `--class_label 3` for negative, and `--class_label 2` for positive
 
+
+The discriminator and the GPT-2 model in the root directory are different from those used for the analysis in the paper. Code and models corresponding to the paper can be found [here](https://github.com/uber-research/PPLM/tree/master/paper_code).
