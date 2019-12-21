@@ -1,0 +1,219 @@
+academy
+admiral
+advance
+Air Force
+aircraft
+aircraft carrier
+ally
+ammo
+ammunition
+amphibious vehicle
+armistice
+armor
+armored vehicle
+armory
+arms
+army
+arrow
+arsenal
+artillery
+assaultat ease
+attack
+attention
+ballistic
+barracks
+base
+battalion
+battery
+battle
+battlefield
+battleship
+bayonet
+besiege
+billet
+bivouac
+bomb
+bombard
+bombardment
+bow and arrow
+brig
+brigade
+bullet
+cadet
+camouflage
+camp
+cannon
+cannon ball
+canteen
+captain
+capture
+carrier
+casualty
+catapult
+cavalry
+chaplain
+coast guard
+colonel
+combat
+command
+commander
+commanding officer
+commission
+company
+conflict
+conquest
+conscription
+convoy
+corporal
+corps
+covert
+crew
+decode
+defeat
+defend
+defense
+destroyer
+detonate
+division
+dog tags
+draft
+encampment
+encode
+enemy
+engage
+enlist
+ensign
+epaulet
+evacuate
+explosive
+field hospital
+field marshal
+fight
+fire
+fireteam
+fleet
+flotilla
+force
+formation
+fort
+fortification
+front
+furlough
+garrison
+general
+Geneva Convention
+grenade
+grenade launcher
+grunt
+guerrilla
+gun
+gunner
+gunnery sergeant
+gunpowder
+headquarters
+helmet
+honor
+hospital
+howitzer
+infantry
+injury
+insignia
+intelligence
+invade
+invasion
+jeep
+jet
+kill
+lance corporal
+leave
+lieutenant
+machete
+major
+maneuver
+marines
+marksman
+medalmedic
+mess hall
+MIA
+mid
+shipman
+military
+mine
+missile
+mortar
+munition
+musket
+national security
+navy
+neutral
+night-vision goggles
+offense
+officer
+ordinance
+parachute
+paratrooper
+peace
+peace treaty
+pentagon
+petty officer
+plane
+platoon
+postPOW
+prisoner of war
+private
+Purple Heart
+quartermaster
+radar
+rank
+reconnoiter
+recruit
+regiment
+rescue
+reserves
+retreat
+ribbon
+rifler
+ocket artillery
+sabotage
+sailor
+salute
+salvo
+seaman
+section
+sergeant
+service
+shell
+shoot
+shot
+siege
+sniper
+soldier
+spear
+specialist
+squad
+squadron
+staff
+stockade
+submarine
+surrender
+tactical
+tactics
+tank
+task force
+tomahawk
+torpedo
+troops
+truce
+uniform
+unit
+veteran
+volley
+war
+warfare
+warrant officer
+warrior
+weapon
+win
+wound
+yeoman
+Zulu time
