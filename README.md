@@ -21,13 +21,14 @@ pip install -r requirements.txt
 
 ## Citation
 ```
-@article{dathathri2019plug,
-    title={Plug and Play Language Models: a Simple Approach to Controlled Text Generation},
-    author={Sumanth Dathathri and Andrea Madotto and Janice Lan and Jane Hung and Eric Frank and Piero Molino and Jason Yosinski and Rosanne Liu},
-    journal={arXiv preprint arXiv:1912.02164},
-    year={2019},
+@inproceedings{
+Dathathri2020Plug,
+title={Plug and Play Language Models: A Simple Approach to Controlled Text Generation},
+author={Sumanth Dathathri and Andrea Madotto and Janice Lan and Jane Hung and Eric Frank and Piero Molino and Jason Yosinski and Rosanne Liu},
+booktitle={International Conference on Learning Representations},
+year={2020},
+url={https://openreview.net/forum?id=H1edEyBKDS}
 }
-
 ```
 
 ## PPLM-BoW 
