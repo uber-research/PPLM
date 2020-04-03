@@ -573,7 +573,7 @@ def train_discriminator(
             torch.save(discriminator.get_classifier().state_dict(),
                        classifier_head_fp_pattern.format(epoch + 1))
 
-    return discriminator
+    return discriminator, discriminator_meta
 
 
 if __name__ == "__main__":
