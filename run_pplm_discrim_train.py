@@ -7,6 +7,7 @@ import argparse
 import csv
 import json
 import math
+import os
 import time
 
 import numpy as np
@@ -19,8 +20,8 @@ from nltk.tokenize.treebank import TreebankWordDetokenizer
 from torchtext import data as torchtext_data
 from torchtext import datasets
 from tqdm import tqdm, trange
-
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
+
 from pplm_classification_head import ClassificationHead
 
 torch.manual_seed(0)
@@ -28,8 +29,6 @@ np.random.seed(0)
 EPSILON = 1e-10
 example_sentence = "This is incredible! I love it, this is the best chicken I have ever had."
 max_length_seq = 100
-
-
 
 
 class Discriminator(torch.nn.Module):
@@ -178,14 +177,17 @@ def evaluate_performance(data_loader, discriminator, device='cpu'):
             correct += pred_t.eq(target_t.view_as(pred_t)).sum().item()
 
     test_loss /= len(data_loader.dataset)
+    accuracy = correct / len(data_loader.dataset)
 
     print(
         "Performance on test set: "
         "Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)".format(
             test_loss, correct, len(data_loader.dataset),
-            100. * correct / len(data_loader.dataset)
+            100. * accuracy
         )
     )
+
+    return test_loss, accuracy
 
 
 def predict(input_sentence, model, classes, cached=False, device='cpu'):
@@ -226,12 +228,78 @@ def get_cached_data_loader(dataset, batch_size, discriminator,
 
     return data_loader
 
+def get_idx2class(dataset_fp):
+    classes = set()
+    with open(dataset_fp) as f:
+        csv_reader = csv.reader(f, delimiter="\t")
+        for row in tqdm(csv_reader, ascii=True):
+            if row:
+                classes.add(row[0])
+
+    return sorted(classes)
+
+def get_generic_dataset(dataset_fp, tokenizer, device, idx2class=None):
+    if not idx2class:
+        idx2class = get_idx2class(dataset_fp)
+    class2idx = {c: i for i, c in enumerate(idx2class)}
+
+    x = []
+    y = []
+    with open(dataset_fp) as f:
+        csv_reader = csv.reader(f, delimiter="\t")
+        for i, row in enumerate(tqdm(csv_reader, ascii=True)):
+            if row:
+                label = row[0]
+                text = row[1]
+
+                try:
+                    seq = tokenizer.encode(text)
+                    if (len(seq) < max_length_seq):
+                        seq = torch.tensor(
+                            [50256] + seq,
+                            device=device,
+                            dtype=torch.long
+                        )
+
+                    else:
+                        print(
+                            "Line {} is longer than maximum length {}".format(
+                                i, max_length_seq
+                            ))
+                        continue
+
+                    x.append(seq)
+                    y.append(class2idx[label])
+
+                except:
+                    print("Error tokenizing line {}, skipping it".format(i))
+                    pass
+
+    return Dataset(x, y)
 
 def train_discriminator(
-        dataset, dataset_fp=None, pretrained_model="gpt2-medium",
-        epochs=10, batch_size=64, log_interval=10,
-        save_model=False, cached=False, no_cuda=False):
+        dataset,
+        dataset_fp=None,
+        pretrained_model="gpt2-medium",
+        epochs=10,
+        batch_size=64,
+        log_interval=10,
+        save_model=False,
+        cached=False,
+        no_cuda=False,
+        output_fp='.'
+):
     device = "cuda" if torch.cuda.is_available() and not no_cuda else "cpu"
+
+    if save_model:
+        if not os.path.exists(output_fp):
+            os.makedirs(output_fp)
+    classifier_head_meta_fp = os.path.join(
+        output_fp, "{}_classifier_head_meta.json".format(dataset)
+    )
+    classifier_head_fp_pattern = os.path.join(
+        output_fp, "{}_classifier_head_epoch".format(dataset) + "_{}.pt"
+    )
 
     print("Preprocessing {} dataset...".format(dataset))
     start = time.time()
@@ -407,15 +475,7 @@ def train_discriminator(
             raise ValueError("When generic dataset is selected, "
                              "dataset_fp needs to be specified aswell.")
 
-        classes = set()
-        with open(dataset_fp) as f:
-            csv_reader = csv.reader(f, delimiter="\t")
-            for row in tqdm(csv_reader, ascii=True):
-                if row:
-                    classes.add(row[0])
-
-        idx2class = sorted(classes)
-        class2idx = {c: i for i, c in enumerate(idx2class)}
+        idx2class = get_idx2class(dataset_fp)
 
         discriminator = Discriminator(
             class_size=len(idx2class),
@@ -424,39 +484,9 @@ def train_discriminator(
             device=device
         ).to(device)
 
-        x = []
-        y = []
-        with open(dataset_fp) as f:
-            csv_reader = csv.reader(f, delimiter="\t")
-            for i, row in enumerate(tqdm(csv_reader, ascii=True)):
-                if row:
-                    label = row[0]
-                    text = row[1]
-
-                    try:
-                        seq = discriminator.tokenizer.encode(text)
-                        if (len(seq) < max_length_seq):
-                            seq = torch.tensor(
-                                [50256] + seq,
-                                device=device,
-                                dtype=torch.long
-                            )
-
-                        else:
-                            print(
-                                "Line {} is longer than maximum length {}".format(
-                                    i, max_length_seq
-                                ))
-                            continue
-
-                        x.append(seq)
-                        y.append(class2idx[label])
-
-                    except:
-                        print("Error tokenizing line {}, skipping it".format(i))
-                        pass
-
-        full_dataset = Dataset(x, y)
+        full_dataset = get_generic_dataset(
+            dataset_fp, discriminator.tokenizer, device, idx2class=idx2class
+        )
         train_size = int(0.9 * len(full_dataset))
         test_size = len(full_dataset) - train_size
         train_dataset, test_dataset = torch.utils.data.random_split(
@@ -468,7 +498,7 @@ def train_discriminator(
             "class_size": len(idx2class),
             "embed_size": discriminator.embed_size,
             "pretrained_model": pretrained_model,
-            "class_vocab": class2idx,
+            "class_vocab": {c: i for i, c in enumerate(idx2class)},
             "default_class": 0,
         }
 
@@ -505,8 +535,7 @@ def train_discriminator(
                                                   collate_fn=collate_fn)
 
     if save_model:
-        with open("{}_classifier_head_meta.json".format(dataset),
-                  "w") as meta_file:
+        with open(classifier_head_meta_fp, "w") as meta_file:
             json.dump(discriminator_meta, meta_file)
 
     optimizer = optim.Adam(discriminator.parameters(), lr=0.0001)
@@ -542,8 +571,9 @@ def train_discriminator(
             #               args.dataset, epoch + 1
             #               ))
             torch.save(discriminator.get_classifier().state_dict(),
-                       "{}_classifier_head_epoch_{}.pt".format(dataset,
-                                                               epoch + 1))
+                       classifier_head_fp_pattern.format(epoch + 1))
+
+    return discriminator
 
 
 if __name__ == "__main__":
@@ -571,6 +601,8 @@ if __name__ == "__main__":
                         help="whether to cache the input representations")
     parser.add_argument("--no_cuda", action="store_true",
                         help="use to turn off cuda")
+    parser.add_argument("--output_fp", default=".",
+                        help="path to save the output to")
     args = parser.parse_args()
 
     train_discriminator(**(vars(args)))
