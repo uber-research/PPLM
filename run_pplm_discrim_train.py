@@ -21,6 +21,7 @@ from torchtext import data as torchtext_data
 from torchtext import datasets
 from tqdm import tqdm, trange
 from transformers import GPT2Tokenizer, GPT2LMHeadModel
+from transformers import BertTokenizer, BertModel
 
 from pplm_classification_head import ClassificationHead
 
@@ -42,9 +43,18 @@ class Discriminator(torch.nn.Module):
             device='cpu'
     ):
         super(Discriminator, self).__init__()
-        self.tokenizer = GPT2Tokenizer.from_pretrained(pretrained_model)
-        self.encoder = GPT2LMHeadModel.from_pretrained(pretrained_model)
-        self.embed_size = self.encoder.transformer.config.hidden_size
+        if pretrained_model.startswith("gpt2"):
+            self.tokenizer = GPT2Tokenizer.from_pretrained(pretrained_model)
+            self.encoder = GPT2LMHeadModel.from_pretrained(pretrained_model)
+            self.embed_size = self.encoder.transformer.config.hidden_size
+        elif pretrained_model.startswith("bert"):
+            self.tokenizer = BertTokenizer.from_pretrained(pretrained_model)
+            self.encoder = BertModel.from_pretrained(pretrained_model)
+            self.embed_size = self.encoder.config.hidden_size
+        else:
+            raise ValueError(
+                "{} model not yet supported".format(pretrained_model)
+            )
         self.classifier_head = ClassificationHead(
             class_size=class_size,
             embed_size=self.embed_size
@@ -64,7 +74,12 @@ class Discriminator(torch.nn.Module):
         mask = x.ne(0).unsqueeze(2).repeat(
             1, 1, self.embed_size
         ).float().to(self.device).detach()
-        hidden, _ = self.encoder.transformer(x)
+        if hasattr(self.encoder, 'transformer'):
+            # for gpt2
+            hidden, _ = self.encoder.transformer(x)
+        else:
+            # for bert
+            hidden, _ = self.encoder(x)
         masked_hidden = hidden * mask
         avg_hidden = torch.sum(masked_hidden, dim=1) / (
                 torch.sum(mask, dim=1).detach() + EPSILON
@@ -238,7 +253,8 @@ def get_idx2class(dataset_fp):
 
     return sorted(classes)
 
-def get_generic_dataset(dataset_fp, tokenizer, device, idx2class=None):
+def get_generic_dataset(dataset_fp, tokenizer, device,
+                        idx2class=None, add_eos_token=False):
     if not idx2class:
         idx2class = get_idx2class(dataset_fp)
     class2idx = {c: i for i, c in enumerate(idx2class)}
@@ -255,8 +271,10 @@ def get_generic_dataset(dataset_fp, tokenizer, device, idx2class=None):
                 try:
                     seq = tokenizer.encode(text)
                     if (len(seq) < max_length_seq):
+                        if add_eos_token:
+                            seq = [50256] + seq
                         seq = torch.tensor(
-                            [50256] + seq,
+                            seq,
                             device=device,
                             dtype=torch.long
                         )
@@ -282,6 +300,7 @@ def train_discriminator(
         dataset_fp=None,
         pretrained_model="gpt2-medium",
         epochs=10,
+        learning_rate=0.0001,
         batch_size=64,
         log_interval=10,
         save_model=False,
@@ -290,6 +309,7 @@ def train_discriminator(
         output_fp='.'
 ):
     device = "cuda" if torch.cuda.is_available() and not no_cuda else "cpu"
+    add_eos_token = pretrained_model.startswith("gpt2")
 
     if save_model:
         if not os.path.exists(output_fp):
@@ -332,7 +352,9 @@ def train_discriminator(
                 vars(train_data[i])["text"]
             )
             seq = discriminator.tokenizer.encode(seq)
-            seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
+            if add_eos_token:
+                seq = [50256] + seq
+            seq = torch.tensor(seq, device=device, dtype=torch.long)
             x.append(seq)
             y.append(class2idx[vars(train_data[i])["label"]])
         train_dataset = Dataset(x, y)
@@ -344,7 +366,9 @@ def train_discriminator(
                 vars(test_data[i])["text"]
             )
             seq = discriminator.tokenizer.encode(seq)
-            seq = torch.tensor([50256] + seq, device=device, dtype=torch.long)
+            if add_eos_token:
+                seq = [50256] + seq
+            seq = torch.tensor(seq, device=device, dtype=torch.long)
             test_x.append(seq)
             test_y.append(class2idx[vars(test_data[i])["label"]])
         test_dataset = Dataset(test_x, test_y)
@@ -368,7 +392,7 @@ def train_discriminator(
             device=device
         ).to(device)
 
-        with open("datasets/clickbait/clickbait_train_prefix.txt") as f:
+        with open("datasets/clickbait/clickbait.txt") as f:
             data = []
             for i, line in enumerate(f):
                 try:
@@ -380,15 +404,17 @@ def train_discriminator(
                     continue
         x = []
         y = []
-        with open("datasets/clickbait/clickbait_train_prefix.txt") as f:
+        with open("datasets/clickbait/clickbait.txt") as f:
             for i, line in enumerate(tqdm(f, ascii=True)):
                 try:
                     d = eval(line)
                     seq = discriminator.tokenizer.encode(d["text"])
 
                     if len(seq) < max_length_seq:
+                        if add_eos_token:
+                            seq = [50256] + seq
                         seq = torch.tensor(
-                            [50256] + seq, device=device, dtype=torch.long
+                            seq, device=device, dtype=torch.long
                         )
                     else:
                         print("Line {} is longer than maximum length {}".format(
@@ -437,8 +463,10 @@ def train_discriminator(
                     seq = discriminator.tokenizer.encode(d["text"])
 
                     if len(seq) < max_length_seq:
+                        if add_eos_token:
+                            seq = [50256] + seq
                         seq = torch.tensor(
-                            [50256] + seq, device=device, dtype=torch.long
+                            seq, device=device, dtype=torch.long
                         )
                     else:
                         print("Line {} is longer than maximum length {}".format(
@@ -485,7 +513,8 @@ def train_discriminator(
         ).to(device)
 
         full_dataset = get_generic_dataset(
-            dataset_fp, discriminator.tokenizer, device, idx2class=idx2class
+            dataset_fp, discriminator.tokenizer, device,
+            idx2class=idx2class, add_eos_token=add_eos_token
         )
         train_size = int(0.9 * len(full_dataset))
         test_size = len(full_dataset) - train_size
@@ -538,7 +567,7 @@ def train_discriminator(
         with open(classifier_head_meta_fp, "w") as meta_file:
             json.dump(discriminator_meta, meta_file)
 
-    optimizer = optim.Adam(discriminator.parameters(), lr=0.0001)
+    optimizer = optim.Adam(discriminator.parameters(), lr=learning_rate)
 
     for epoch in range(epochs):
         start = time.time()
@@ -591,6 +620,8 @@ if __name__ == "__main__":
                         help="Pretrained model to use as encoder")
     parser.add_argument("--epochs", type=int, default=10, metavar="N",
                         help="Number of training epochs")
+    parser.add_argument("--learning_rate", type=float, default=0.0001,
+                        help="Learnign rate")
     parser.add_argument("--batch_size", type=int, default=64, metavar="N",
                         help="input batch size for training (default: 64)")
     parser.add_argument("--log_interval", type=int, default=10, metavar="N",
