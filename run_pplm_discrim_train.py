@@ -7,10 +7,9 @@ import argparse
 import csv
 import json
 import math
+import numpy as np
 import os
 import time
-
-import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim
@@ -20,8 +19,8 @@ from nltk.tokenize.treebank import TreebankWordDetokenizer
 from torchtext import data as torchtext_data
 from torchtext import datasets
 from tqdm import tqdm, trange
-from transformers import GPT2Tokenizer, GPT2LMHeadModel
 from transformers import BertTokenizer, BertModel
+from transformers import GPT2Tokenizer, GPT2LMHeadModel
 
 from pplm_classification_head import ClassificationHead
 
@@ -37,8 +36,9 @@ class Discriminator(torch.nn.Module):
 
     def __init__(
             self,
-            class_size,
+            class_size=None,
             pretrained_model="gpt2-medium",
+            classifier_head=None,
             cached_mode=False,
             device='cpu'
     ):
@@ -55,10 +55,15 @@ class Discriminator(torch.nn.Module):
             raise ValueError(
                 "{} model not yet supported".format(pretrained_model)
             )
-        self.classifier_head = ClassificationHead(
-            class_size=class_size,
-            embed_size=self.embed_size
-        )
+        if classifier_head:
+            self.classifier_head = classifier_head
+        else:
+            if not class_size:
+                raise ValueError("must specify class_size")
+            self.classifier_head = ClassificationHead(
+                class_size=class_size,
+                embed_size=self.embed_size
+            )
         self.cached_mode = cached_mode
         self.device = device
 
@@ -96,6 +101,16 @@ class Discriminator(torch.nn.Module):
         probs = F.log_softmax(logits, dim=-1)
 
         return probs
+
+    def predict(self, input_sentence):
+        input_t = self.tokenizer.encode(input_sentence)
+        input_t = torch.tensor([input_t], dtype=torch.long, device=self.device)
+        if self.cached_mode:
+            input_t = self.avg_representation(input_t)
+
+        log_probs = self(input_t).data.cpu().numpy().flatten().tolist()
+        prob = [math.exp(log_prob) for log_prob in log_probs]
+        return prob
 
 
 class Dataset(data.Dataset):
@@ -243,6 +258,7 @@ def get_cached_data_loader(dataset, batch_size, discriminator,
 
     return data_loader
 
+
 def get_idx2class(dataset_fp):
     classes = set()
     with open(dataset_fp) as f:
@@ -252,6 +268,7 @@ def get_idx2class(dataset_fp):
                 classes.add(row[0])
 
     return sorted(classes)
+
 
 def get_generic_dataset(dataset_fp, tokenizer, device,
                         idx2class=None, add_eos_token=False):
@@ -294,6 +311,7 @@ def get_generic_dataset(dataset_fp, tokenizer, device,
                     pass
 
     return Dataset(x, y)
+
 
 def train_discriminator(
         dataset,
@@ -626,6 +644,32 @@ def train_discriminator(
     print("Max acc: {} - Epoch: {}".format(max_acc, max_acc_epoch))
 
     return discriminator, discriminator_meta
+
+
+def load_classifier_head(weights_path, meta_path, device='cpu'):
+    with open(meta_path, 'r', encoding="utf8") as f:
+        meta_params = json.load(f)
+    classifier_head = ClassificationHead(
+        class_size=meta_params['class_size'],
+        embed_size=meta_params['embed_size']
+    ).to(device)
+    classifier_head.load_state_dict(
+        torch.load(weights_path, map_location=device))
+    classifier_head.eval()
+    return classifier_head, meta_params
+
+
+def load_discriminator(weights_path, meta_path, device='cpu'):
+    classifier_head, meta_param = load_classifier_head(
+        weights_path, meta_path, device
+    )
+    discriminator =  Discriminator(
+        pretrained_model=meta_param['pretrained_model'],
+        classifier_head=classifier_head,
+        cached_mode=False,
+        device=device
+    )
+    return discriminator, meta_param
 
 
 if __name__ == "__main__":
