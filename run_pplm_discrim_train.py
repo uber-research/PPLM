@@ -569,6 +569,9 @@ def train_discriminator(
 
     optimizer = optim.Adam(discriminator.parameters(), lr=learning_rate)
 
+    test_losses = []
+    test_accuracies = []
+
     for epoch in range(epochs):
         start = time.time()
         print("\nEpoch", epoch + 1)
@@ -581,7 +584,7 @@ def train_discriminator(
             log_interval=log_interval,
             device=device
         )
-        evaluate_performance(
+        test_loss, test_accuracy = evaluate_performance(
             data_loader=test_loader,
             discriminator=discriminator,
             device=device
@@ -589,6 +592,9 @@ def train_discriminator(
 
         end = time.time()
         print("Epoch took: {:.3f}s".format(end - start))
+
+        test_losses.append(test_loss)
+        test_accuracies.append(test_accuracy)
 
         print("\nExample prediction")
         predict(example_sentence, discriminator, idx2class,
@@ -601,6 +607,23 @@ def train_discriminator(
             #               ))
             torch.save(discriminator.get_classifier().state_dict(),
                        classifier_head_fp_pattern.format(epoch + 1))
+
+    min_loss = float("inf")
+    min_loss_epoch = 0
+    max_acc = 0.0
+    max_acc_epoch = 0
+    print("Test performance per epoch")
+    print("epoch\tloss\tacc")
+    for e, (loss, acc) in enumerate(zip(test_losses, test_accuracies)):
+        print("{}\t{}\t{}".format(e + 1, loss, acc))
+        if loss < min_loss:
+            min_loss = loss
+            min_loss_epoch = e + 1
+        if acc > max_acc:
+            max_acc = acc
+            max_acc_epoch = e + 1
+    print("Min loss: {} - Epoch: {}".format(min_loss, min_loss_epoch))
+    print("Max acc: {} - Epoch: {}".format(max_acc, max_acc_epoch))
 
     return discriminator, discriminator_meta
 
