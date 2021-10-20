@@ -32,9 +32,8 @@ import torch
 import torch.nn.functional as F
 from torch.autograd import Variable
 from tqdm import trange
-from transformers import GPT2Tokenizer
 from transformers.file_utils import cached_path
-from transformers.modeling_gpt2 import GPT2LMHeadModel
+from transformers import GPT2LMHeadModel, GPT2Tokenizer
 
 from pplm_classification_head import ClassificationHead
 
@@ -114,6 +113,12 @@ def top_k_filter(logits, k, probs=False):
                            logits)
 
 
+def add_func(L1, L2):
+    return [
+            [m1 + m2 for (m1, m2) in zip(l1, l2)]
+            for (l1, l2) in zip(L1, L2)
+    ]
+
 def perturb_past(
         past,
         model,
@@ -138,8 +143,11 @@ def perturb_past(
 ):
     # Generate inital perturbed past
     grad_accumulator = [
+                        [
         (np.zeros(p.shape).astype("float32"))
-        for p in past
+        for p in p_layer
+        ]
+        for p_layer in past
     ]
 
     if accumulated_hidden is None:
@@ -156,31 +164,31 @@ def perturb_past(
 
     # TODO fix this comment (SUMANTH)
     # Generate a mask is gradient perturbated is based on a past window
-    _, _, _, curr_length, _ = past[0].shape
+    _, _, curr_length, _ = past[0][0].shape
 
     if curr_length > window_length and window_length > 0:
         ones_key_val_shape = (
-                tuple(past[0].shape[:-2])
+                tuple(past[0][0].shape[:-2])
                 + tuple([window_length])
-                + tuple(past[0].shape[-1:])
+                + tuple(past[0][0].shape[-1:])
         )
 
         zeros_key_val_shape = (
-                tuple(past[0].shape[:-2])
+                tuple(past[0][0].shape[:-2])
                 + tuple([curr_length - window_length])
-                + tuple(past[0].shape[-1:])
+                + tuple(past[0][0].shape[-1:])
         )
 
         ones_mask = torch.ones(ones_key_val_shape)
-        ones_mask = decay_mask * ones_mask.permute(0, 1, 2, 4, 3)
-        ones_mask = ones_mask.permute(0, 1, 2, 4, 3)
+        ones_mask = decay_mask * ones_mask.permute(0, 1, 3, 2)
+        ones_mask = ones_mask.permute(0, 1, 3, 2)
 
         window_mask = torch.cat(
             (ones_mask, torch.zeros(zeros_key_val_shape)),
             dim=-2
         ).to(device)
     else:
-        window_mask = torch.ones_like(past[0]).to(device)
+        window_mask = torch.ones_like(past[0][0]).to(device)
 
     # accumulate perturbations for num_iterations
     loss_per_iter = []
@@ -189,14 +197,19 @@ def perturb_past(
         if verbosity_level >= VERBOSE:
             print("Iteration ", i + 1)
         curr_perturbation = [
+                             [
             to_var(torch.from_numpy(p_), requires_grad=True, device=device)
-            for p_ in grad_accumulator
+            for p_ in p_layer
+            ]
+            for p_layer in grad_accumulator
         ]
 
         # Compute hidden using perturbed past
-        perturbed_past = list(map(add, past, curr_perturbation))
-        _, _, _, curr_length, _ = curr_perturbation[0].shape
-        all_logits, _, all_hidden = model(last, past=perturbed_past)
+        perturbed_past = add_func(past, curr_perturbation)
+        _, _, curr_length, _ = curr_perturbation[0][0].shape
+        all_logits, _, all_hidden = model(last, past_key_values=perturbed_past,
+                                          output_hidden_states=True,
+                                          return_dict=False)
         hidden = all_hidden[-1]
         new_accumulated_hidden = accumulated_hidden + torch.sum(
             hidden,
@@ -272,42 +285,56 @@ def perturb_past(
         # calculate gradient norms
         if grad_norms is not None and loss_type == PPLM_BOW:
             grad_norms = [
-                torch.max(grad_norms[index], torch.norm(p_.grad * window_mask))
-                for index, p_ in enumerate(curr_perturbation)
+                          [
+                          torch.max(grad, torch.norm(p_.grad * window_mask))
+                          for grad, p_ in zip(grads, p_layer)
+                          ]
+                          for grads, p_layer in zip(grad_norms, curr_perturbation)
             ]
         else:
             grad_norms = [
-                (torch.norm(p_.grad * window_mask) + SMALL_CONST)
-                for index, p_ in enumerate(curr_perturbation)
+                          [
+                          torch.norm(p_.grad * window_mask) + SMALL_CONST
+                          for p_ in p_layer
+                          ]
+                          for p_layer in curr_perturbation
             ]
 
         # normalize gradients
         grad = [
-            -stepsize *
-            (p_.grad * window_mask / grad_norms[
-                index] ** gamma).data.cpu().numpy()
-            for index, p_ in enumerate(curr_perturbation)
+                    [
+                    -stepsize *
+                    (p_.grad * window_mask / grad ** gamma).data.cpu().numpy()
+                    for grad, p_ in zip(grads, p_layer)
+                    ]
+                    for grads, p_layer in zip(grad_norms, curr_perturbation)
         ]
 
         # accumulate gradient
-        grad_accumulator = list(map(add, grad, grad_accumulator))
+        grad_accumulator = add_func(grad, grad_accumulator)
 
         # reset gradients, just to make sure
-        for p_ in curr_perturbation:
-            p_.grad.data.zero_()
+        for p_layer in curr_perturbation:
+            for p_ in p_layer:
+                p_.grad.data.zero_()
 
         # removing past from the graph
         new_past = []
-        for p_ in past:
-            new_past.append(p_.detach())
+        for p_layer in past:
+            new_past.append([])
+            for p_ in p_layer:
+                new_past[-1].append(p_.detach())
         past = new_past
 
     # apply the accumulated perturbations to the past
     grad_accumulator = [
+                        [
         to_var(torch.from_numpy(p_), requires_grad=True, device=device)
-        for p_ in grad_accumulator
+        for p_ in p_layer
+        ]
+        for p_layer in grad_accumulator
     ]
-    pert_past = list(map(add, past, grad_accumulator))
+    pert_past = add_func(past, grad_accumulator)
 
     return pert_past, new_accumulated_hidden, grad_norms, loss_per_iter
 
@@ -375,7 +402,6 @@ def get_bag_of_words_indices(bag_of_words_ids_or_paths: List[str], tokenizer) ->
             words = f.read().strip().split("\n")
         bow_indices.append(
             [tokenizer.encode(word.strip(),
-                              add_prefix_space=True,
                               add_special_tokens=False)
              for word in words])
     return bow_indices
@@ -561,9 +587,13 @@ def generate_text_pplm(
         if past is None and output_so_far is not None:
             last = output_so_far[:, -1:]
             if output_so_far.shape[1] > 1:
-                _, past, _ = model(output_so_far[:, :-1])
+                _, past, _ = model(output_so_far[:, :-1],
+                                   output_hidden_states=True,
+                                   return_dict=False)
 
-        unpert_logits, unpert_past, unpert_all_hidden = model(output_so_far)
+        unpert_logits, unpert_past, unpert_all_hidden = model(output_so_far,
+                                                              output_hidden_states=True,
+                                                              return_dict=False)
         unpert_last_hidden = unpert_all_hidden[-1]
 
         # check if we are abowe grad max length
@@ -607,7 +637,9 @@ def generate_text_pplm(
             else:
                 pert_past = past
 
-        pert_logits, past, pert_all_hidden = model(last, past=pert_past)
+        pert_logits, past, pert_all_hidden = model(last, past_key_values=pert_past,
+                                                   output_hidden_states=True,
+                                                   return_dict=False)
         pert_logits = pert_logits[:, -1, :] / temperature  # + SMALL_CONST
         pert_probs = F.softmax(pert_logits, dim=-1)
 
