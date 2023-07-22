@@ -1,4 +1,4 @@
-torch==1.7.0
+torch==1.13.1
 nltk==3.4.5
 colorama==0.4.4
 transformers==3.4.0
