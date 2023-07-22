@@ -1,5 +1,5 @@
 torch==1.7.0
-nltk==3.4.5
+nltk==3.6.6
 colorama==0.4.4
 transformers==3.4.0
 torchtext==0.3.1
