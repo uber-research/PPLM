@@ -4,7 +4,7 @@ This repository contains code to run the Plug and Play Language Model (PPLM), as
 
 
 Note: If you are planning on using PPLM as a baseline, and would like to use the parameters listed in the paper's Appendix, please use the LM and the discriminator from this **[folder](https://github.com/uber-research/PPLM/tree/master/paper_code)**.
-Alternatively, tune the hyperparamters on your own if you are using the code/models in the main directory and/or the **[🤗/Transformers](https://transformer.huggingface.co/model/pplm)** for a fair comparison (the optimal parameters for these models/discriminators are roughly off by a factor of 5 from those used in the paper).
+Alternatively, tune the hyperparameters on your own if you are using the code/models in the main directory and/or the **[🤗/Transformers](https://transformer.huggingface.co/model/pplm)** for a fair comparison (the optimal parameters for these models/discriminators are roughly off by a factor of 5 from those used in the paper).
 
 PPLM is also integrated into the **[🤗/Transformers](https://github.com/huggingface/transformers/tree/master/examples/pplm)** repository.
 
