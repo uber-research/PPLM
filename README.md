@@ -18,9 +18,9 @@ PPLM allows a user to flexibly plug in one or more tiny attribute models represe
 See also our [arXiv paper](https://arxiv.org/abs/1912.02164), [blog post](https://eng.uber.com/pplm), and try it out for yourself with no setup using the [Colab notebook](https://colab.research.google.com/drive/1Ux0Z4-ruiVtJ6jUk98uk6FqfvGHCOYL3).
 
 ## Setup
-
+The project require Python3.6.
 ```bash
-pip install -r requirements.txt
+pip install -r requirements.txt -f https://download.pytorch.org/whl/torch_stable.html
 ```
 
 ## Citation
