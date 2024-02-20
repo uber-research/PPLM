@@ -1,4 +1,10 @@
-torch==1.7.0
+torch==1.7.0+cpu
+torchvision==0.8.1+cpu
+torchaudio===0.7.0
+typing-extensions==3.7.2
+requests==2.18.4
+packaging==16.8
+filelock==3.0.12
 nltk==3.4.5
 colorama==0.4.4
 transformers==3.4.0
